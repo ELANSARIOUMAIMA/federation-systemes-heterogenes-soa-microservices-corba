@@ -14,5 +14,6 @@
   <modules>
     <module>canonical-model</module>
     <module>air-bridge</module>
+    <module>rail-bridge</module>
   </modules>
 </project>

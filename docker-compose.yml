@@ -45,6 +45,20 @@ services:
       - air
     ports:
       - "8083:8080"
+  # --- Bridge CORBA -> REST (à nous) ---
+  rail-bridge:
+    build:
+      context: .
+      dockerfile: rail-bridge/Dockerfile
+    container_name: rail-bridge
+    environment:
+      RAIL_IOR_PATH: /ior/RailBooking.ior
+    depends_on:
+      - rail
+    volumes:
+      - ./ior:/ior:ro
+    ports:
+      - "8082:8080"
 
 networks:
   default:
