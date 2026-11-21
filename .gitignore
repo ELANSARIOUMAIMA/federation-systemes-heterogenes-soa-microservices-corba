@@ -12,3 +12,7 @@ ior/*.ior
 .settings/
 .project
 .classpath
+
+# JVM crash logs
+hs_err_pid*.log
+replay_pid*.log
