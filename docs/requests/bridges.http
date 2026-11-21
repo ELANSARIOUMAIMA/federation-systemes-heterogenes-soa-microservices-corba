@@ -1,0 +1,52 @@
+### RAIL : recherche
+GET http://localhost:8082/v1/offers?origin=Casablanca&destination=Rabat&date=2026-11-15
+
+### RAIL : hold
+POST http://localhost:8082/v1/holds
+Content-Type: application/json
+
+{"offerId":"RAIL:RAIL-CAS-RAB-0730","seats":2}
+
+> {% client.global.set("railHold", response.body.holdId); %}
+
+### RAIL : confirm
+POST http://localhost:8082/v1/holds/{{railHold}}/confirm
+
+> {% client.global.set("railRef", response.body.bookingRef); %}
+
+### RAIL : cancel (rejouable, toujours 200)
+DELETE http://localhost:8082/v1/references/{{railRef}}
+
+### RAIL : hold sur un trajet inconnu (409)
+POST http://localhost:8082/v1/holds
+Content-Type: application/json
+
+{"offerId":"RAIL:TRAJET-INEXISTANT","seats":1}
+
+### AIR : recherche
+GET http://localhost:8083/v1/offers?origin=Rabat&destination=Paris&date=2026-11-15
+
+### AIR : hold
+POST http://localhost:8083/v1/holds
+Content-Type: application/json
+
+{"offerId":"AIR:AIR-RBA-ORY-1200","seats":1}
+
+> {% client.global.set("airHold", response.body.holdId); %}
+
+### AIR : confirm
+POST http://localhost:8083/v1/holds/{{airHold}}/confirm
+
+> {% client.global.set("airRef", response.body.bookingRef); %}
+
+### AIR : cancel (rejouable, toujours 200)
+DELETE http://localhost:8083/v1/references/{{airRef}}
+
+### AIR : 4 places sur un vol qui en a 3 (409, sert à la compensation)
+POST http://localhost:8083/v1/holds
+Content-Type: application/json
+
+{"offerId":"AIR:AIR-CMN-MAD-1800","seats":4}
+
+### Date invalide (400)
+GET http://localhost:8083/v1/offers?origin=Rabat&destination=Paris&date=15-11-2026
