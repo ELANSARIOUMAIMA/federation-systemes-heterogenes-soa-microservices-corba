@@ -33,6 +33,18 @@ services:
     container_name: air-partner-soap
     ports:
       - "8081:8080"          # WSDL: http://localhost:8081/ws/air.wsdl
+  # --- Bridge SOAP -> REST (à nous) ---
+  air-bridge:
+    build:
+      context: .
+      dockerfile: air-bridge/Dockerfile
+    container_name: air-bridge
+    environment:
+      AIR_SOAP_URL: http://air:8080/ws
+    depends_on:
+      - air
+    ports:
+      - "8083:8080"
 
 networks:
   default:
