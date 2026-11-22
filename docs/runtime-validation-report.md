@@ -52,4 +52,3 @@ Au premier démarrage, RabbitMQ n’a pas pu lire `/var/lib/rabbitmq/.erlang.coo
 - Rapports Surefire : `*/target/surefire-reports/`.
 - Commande exécutée : `docker run --rm -v mobility-p2-maven-cache:/root/.m2 -v "${repo}:/workspace" -w /workspace maven:3.9-eclipse-temurin-17 mvn -B -ntp test` (code 0).
 - Scénarios HTTP : [`requests/verify-p2.ps1`](./requests/verify-p2.ps1).
-- Instructions de remise : [`../P2_HANDOFF.md`](../P2_HANDOFF.md).
