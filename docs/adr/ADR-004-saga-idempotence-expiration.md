@@ -1,0 +1,7 @@
+# ADR-004 — Idempotence, compensation et expiration
+
+- **Statut :** accepté
+- **Décision :** une contrainte unique sur `idempotency_key` protège les dossiers booking; un hash SHA-256 du contenu ordonné détecte la réutilisation avec un contenu divergent. Chaque hold expire après dix minutes; le service carshare libère les sièges une seule fois au moyen d'un statut terminal. L'orchestrateur ne confirme qu'après tous les holds et vise une confirmation sous neuf minutes.
+- **Compensation :** les suppressions de référence des bridges sont idempotentes; la Saga persiste chaque succès/échec de compensation et borne les tentatives (20 par défaut). Le scheduler ne réessaie que des DELETE idempotents. Il ne relance jamais hold/confirm. Les références connues après timeout confirm sont compensées par holdId; un timeout hold sans référence devient une issue de réconciliation.
+- **Persistance :** dossier et étapes initiaux sont enregistrés atomiquement; état d'en-tête dans `trip_booking`, étapes dans `saga_step`, événements dans `booking_outbox`; H2 avec volumes dédiés. Après cinq minutes, un récupérateur compense les Sagas interrompues à partir des références déjà persistées, sans rejouer hold/confirm.
+- **Conséquences :** l'idempotence d'une requête réussie est stricte. L'incertitude irréductible des bridges P1 après perte de réponse reste visible plutôt que masquée par un faux état d'échec.

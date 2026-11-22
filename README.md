@@ -57,6 +57,15 @@ Vous devez obtenir :
 
 Détails et dépannage : **`docs/01-demarrage.md`**.
 
+## Extension P2 — réservation multimodale
+
+La branche `feat/p2-business-saga` ajoute `carshare-service`, `pricing-service`,
+`booking-service`, RabbitMQ, `notification-service` et l'API Gateway. Les ports,
+contrats REST, règles de calcul, variables PowerShell et scénarios de démo sont
+décrits dans **[`docs/P2_IMPLEMENTATION.md`](docs/P2_IMPLEMENTATION.md)** et
+**[`P2_HANDOFF.md`](P2_HANDOFF.md)**. Les nouveaux services construisent avec
+Java 17 dans Docker; les bridges P1 et leurs ports restent inchangés.
+
 ## Comment dialoguer avec les deux systèmes
 
 - **Aérien (SOAP)** : récupérez le WSDL sur `http://localhost:8081/ws/air.wsdl`

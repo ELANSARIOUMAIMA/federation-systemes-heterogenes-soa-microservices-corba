@@ -1,0 +1,63 @@
+### Configuration: remplacer les valeurs d'authentification par celles de l'environnement PowerShell
+@gateway = http://localhost:8080
+@gatewayAuth = Basic BASE64_DE_GATEWAY_USERNAME_COLON_GATEWAY_PASSWORD
+@booking = http://localhost:8086
+@carshare = http://localhost:8084
+@key = p2-demo-booking-001
+
+### Recherche fédérée (vérifier les modes RAIL/AIR/CAR)
+GET {{gateway}}/api/v1/search?origin=Casablanca&destination=Rabat&date=2026-11-15
+Authorization: {{gatewayAuth}}
+
+### Saga nominale train + avion; copier bookingId de la réponse
+POST {{gateway}}/api/v1/bookings
+Authorization: {{gatewayAuth}}
+Idempotency-Key: {{key}}
+Content-Type: application/json
+
+{"segments":[
+  {"mode":"TRAIN","offerId":"RAIL:RAIL-CAS-RAB-0730","origin":"Casablanca","destination":"Rabat","date":"2026-11-15","seats":1},
+  {"mode":"AIR","offerId":"AIR:AIR-RBA-ORY-1200","origin":"Rabat","destination":"Paris","date":"2026-11-15","seats":1}
+]}
+
+### Rejouer exactement la requête précédente : même bookingId et aucune nouvelle réservation
+POST {{gateway}}/api/v1/bookings
+Authorization: {{gatewayAuth}}
+Idempotency-Key: {{key}}
+Content-Type: application/json
+
+{"segments":[
+  {"mode":"TRAIN","offerId":"RAIL:RAIL-CAS-RAB-0730","origin":"Casablanca","destination":"Rabat","date":"2026-11-15","seats":1},
+  {"mode":"AIR","offerId":"AIR:AIR-RBA-ORY-1200","origin":"Rabat","destination":"Paris","date":"2026-11-15","seats":1}
+]}
+
+### Dossier après réservation (remplacer {bookingId})
+GET {{gateway}}/api/v1/bookings/{bookingId}
+Authorization: {{gatewayAuth}}
+
+### Échec de hold après un hold acquis: panne métier simulée, trajet non contigu
+POST {{gateway}}/api/v1/bookings
+Authorization: {{gatewayAuth}}
+Idempotency-Key: p2-demo-hold-failure
+Content-Type: application/json
+
+{"segments":[
+  {"mode":"TRAIN","offerId":"RAIL:RAIL-CAS-RAB-0730","origin":"Casablanca","destination":"Rabat","date":"2026-11-15","seats":1},
+  {"mode":"AIR","offerId":"AIR:AIR-CMN-MAD-1800","origin":"Casablanca","destination":"Madrid","date":"2026-11-15","seats":4}
+]}
+
+### Carshare cycle - création puis remplacement manuel du holdId/ref dans les deux requêtes suivantes
+POST {{carshare}}/v1/holds
+Content-Type: application/json
+
+{"offerId":"CAR:CAR-CAS-RAB-1000","seats":2}
+
+### Confirmation: remplacer {holdId} par l'identifiant reçu
+POST {{carshare}}/v1/holds/{holdId}/confirm
+
+### Annulation idempotente: rejouer une deuxième fois sans effet de stock
+DELETE {{carshare}}/v1/references/{bookingRef}
+
+### Régression P1
+GET http://localhost:8082/v1/offers?origin=Casablanca&destination=Rabat&date=2026-11-15
+GET http://localhost:8083/v1/offers?origin=Rabat&destination=Paris&date=2026-11-15
