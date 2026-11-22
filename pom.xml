@@ -15,5 +15,10 @@
     <module>canonical-model</module>
     <module>air-bridge</module>
     <module>rail-bridge</module>
+    <module>carshare-service</module>
+    <module>pricing-service</module>
+    <module>booking-service</module>
+    <module>notification-service</module>
+    <module>api-gateway</module>
   </modules>
 </project>

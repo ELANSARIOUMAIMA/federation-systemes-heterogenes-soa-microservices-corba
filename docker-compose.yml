@@ -60,6 +60,118 @@ services:
     ports:
       - "8082:8080"
 
+  # --- Services métier P2 ---
+  carshare-service:
+    build:
+      context: .
+      dockerfile: carshare-service/Dockerfile
+    container_name: carshare-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:h2:file:/data/carshare;DB_CLOSE_ON_EXIT=FALSE
+    volumes:
+      - carshare-data:/data
+    ports:
+      - "8084:8080"
+
+  pricing-service:
+    build:
+      context: .
+      dockerfile: pricing-service/Dockerfile
+    container_name: pricing-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:h2:file:/data/pricing;DB_CLOSE_ON_EXIT=FALSE
+    volumes:
+      - pricing-data:/data
+    ports:
+      - "8085:8080"
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: mobilite-rabbitmq
+    user: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:?Set RABBITMQ_USERNAME}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  booking-service:
+    build:
+      context: .
+      dockerfile: booking-service/Dockerfile
+    container_name: booking-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:h2:file:/data/booking;DB_CLOSE_ON_EXIT=FALSE
+      RAIL_URL: http://rail-bridge:8080
+      AIR_URL: http://air-bridge:8080
+      CAR_URL: http://carshare-service:8080
+      PRICING_URL: http://pricing-service:8080
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:?Set RABBITMQ_USERNAME}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD}
+    volumes:
+      - booking-data:/data
+    depends_on:
+      - rail-bridge
+      - air-bridge
+      - carshare-service
+      - pricing-service
+      - rabbitmq
+    ports:
+      - "8086:8080"
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    container_name: notification-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:h2:file:/data/notification;DB_CLOSE_ON_EXIT=FALSE
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:?Set RABBITMQ_USERNAME}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD}
+    volumes:
+      - notification-data:/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    container_name: api-gateway
+    environment:
+      RAIL_URL: http://rail-bridge:8080
+      AIR_URL: http://air-bridge:8080
+      CAR_URL: http://carshare-service:8080
+      BOOKING_URL: http://booking-service:8080
+      GATEWAY_USERNAME: ${GATEWAY_USERNAME:?Set GATEWAY_USERNAME}
+      GATEWAY_PASSWORD: ${GATEWAY_PASSWORD:?Set GATEWAY_PASSWORD}
+    depends_on:
+      - rail-bridge
+      - air-bridge
+      - carshare-service
+      - booking-service
+    ports:
+      - "8080:8080"
+
+volumes:
+  carshare-data:
+  pricing-data:
+  booking-data:
+  notification-data:
+  rabbitmq-data:
+
 networks:
   default:
     name: mobilite-net

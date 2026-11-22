@@ -1,0 +1,6 @@
+package ma.mobility.booking.model;
+
+public enum SagaStepState {
+    PENDING, HOLD_PENDING, HELD, HOLD_FAILED, UNKNOWN_OUTCOME,
+    CONFIRM_PENDING, CONFIRMED, COMPENSATION_PENDING, COMPENSATED
+}
