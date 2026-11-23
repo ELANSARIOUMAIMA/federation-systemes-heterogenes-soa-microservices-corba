@@ -1,16 +1,25 @@
 package ma.mobility.booking.service;
 
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.retry.Retry;
+import io.github.resilience4j.retry.RetryConfig;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.EnumMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Supplier;
 import ma.mobility.booking.api.BookingException;
 import ma.mobility.booking.api.BookingRequest;
 import ma.mobility.booking.api.BookingView;
@@ -45,18 +54,54 @@ public class BookingService {
     private final SagaStepRepository steps;
     private final BookingPersistence persistence;
     private final RestTemplate http;
+    private final Map<TransportMode, CircuitBreaker> breakers = new EnumMap<>(TransportMode.class);
+    private final Retry idempotentRetry;
+
     @Value("${booking.rail-url}") private String railUrl;
     @Value("${booking.air-url}") private String airUrl;
     @Value("${booking.car-url}") private String carUrl;
     @Value("${booking.pricing-url}") private String pricingUrl;
-    @Value("${booking.compensation.max-attempts:20}") private int maxCompensationAttempts;
+    @Value("${booking.compensation.max-attempts:60}") private int maxCompensationAttempts;
 
     public BookingService(BookingRepository bookings, SagaStepRepository steps, BookingPersistence persistence,
-                          RestTemplate http) {
+                          RestTemplate http,
+                          @Value("${booking.circuit-breaker.window-size:6}") int cbWindowSize,
+                          @Value("${booking.circuit-breaker.minimum-calls:6}") int cbMinimumCalls,
+                          @Value("${booking.circuit-breaker.failure-rate:50}") float cbFailureRate,
+                          @Value("${booking.circuit-breaker.open-seconds:15}") int cbOpenSeconds,
+                          @Value("${booking.retry.wait-ms:200}") long retryWaitMs) {
         this.bookings = bookings;
         this.steps = steps;
         this.persistence = persistence;
         this.http = http;
+
+        CircuitBreakerConfig cbConfig = CircuitBreakerConfig.custom()
+                .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.COUNT_BASED)
+                .slidingWindowSize(cbWindowSize)
+                .minimumNumberOfCalls(cbMinimumCalls)
+                .failureRateThreshold(cbFailureRate)
+                .waitDurationInOpenState(Duration.ofSeconds(cbOpenSeconds))
+                .permittedNumberOfCallsInHalfOpenState(2)
+                .automaticTransitionFromOpenToHalfOpenEnabled(true)
+                // Seules les pannes réseau et HTTP 5xx ouvrent le circuit (jamais un 409 métier).
+                .recordException(BookingService::isTransientOrServerFailure)
+                .build();
+        for (TransportMode mode : TransportMode.values()) {
+            CircuitBreaker cb = CircuitBreaker.of("booking-" + mode.name().toLowerCase(), cbConfig);
+            cb.getEventPublisher().onStateTransition(event ->
+                    log.warn("Circuit breaker {} : {}", cb.getName(), event.getStateTransition()));
+            breakers.put(mode, cb);
+        }
+        // Retry uniquement pour les opérations idempotentes (GET /v1/offers et DELETE /v1/references/{ref}).
+        this.idempotentRetry = Retry.of("booking-idempotent", RetryConfig.custom()
+                .maxAttempts(2)
+                .waitDuration(Duration.ofMillis(retryWaitMs))
+                .retryOnException(BookingService::isRetryableFailure)
+                .build());
+    }
+
+    public Map<TransportMode, CircuitBreaker> circuitBreakers() {
+        return Collections.unmodifiableMap(breakers);
     }
 
     public BookingView create(String key, BookingRequest request) {
@@ -65,6 +110,7 @@ public class BookingService {
         TripBookingEntity existing = bookings.findByIdempotencyKey(key).orElse(null);
         if (existing != null) {
             if (!existing.payloadHash.equals(hash)) throw BookingException.conflict("Idempotency-Key déjà utilisé avec un payload différent");
+            log.info("Rejeu idempotent détecté pour bookingId={}", existing.id);
             return view(existing);
         }
 
@@ -98,6 +144,7 @@ public class BookingService {
             return view(winner);
         }
 
+        log.info("Démarrage Saga bookingId={} segments={} totalMinor={}", booking.id, sagaSteps.size(), booking.totalMinor);
         booking = bookings.findById(booking.id).orElseThrow();
         execute(booking, sagaSteps);
         return view(bookings.findById(booking.id).orElseThrow());
@@ -114,8 +161,10 @@ public class BookingService {
             step.state = SagaStepState.HOLD_PENDING;
             steps.save(step);
             try {
-                HoldResponse response = http.postForObject(serviceUrl(step.mode) + "/v1/holds",
-                        new HoldRequestBody(step.offerId, step.seats), HoldResponse.class);
+                // Hold non idempotent : protégé par circuit breaker mais JAMAIS rejoué.
+                HoldResponse response = guarded(step.mode, false, () ->
+                        http.postForObject(serviceUrl(step.mode) + "/v1/holds",
+                                new HoldRequestBody(step.offerId, step.seats), HoldResponse.class));
                 if (response == null || response.holdId == null || response.holdId.isBlank()) {
                     step.state = SagaStepState.UNKNOWN_OUTCOME;
                     step.lastError = "Réponse hold vide; résultat distant incertain";
@@ -127,6 +176,14 @@ public class BookingService {
                 step.heldAt = Instant.now();
                 step.state = SagaStepState.HELD;
                 steps.save(step);
+                log.info("Saga bookingId={} step={} ({}) HELD holdId={}", booking.id, step.stepOrder, step.mode, step.holdId);
+            } catch (CallNotPermittedException open) {
+                // Circuit ouvert : l'opérateur n'a PAS été appelé -> échec certain, pas d'UNKNOWN_OUTCOME.
+                step.state = SagaStepState.HOLD_FAILED;
+                step.lastError = "Circuit ouvert vers " + step.mode + " (hold non tenté)";
+                steps.save(step);
+                compensate(booking, sagaSteps, step.lastError);
+                return;
             } catch (ResourceAccessException error) {
                 step.state = SagaStepState.UNKNOWN_OUTCOME;
                 step.lastError = "Timeout réseau pendant hold; référence inconnue";
@@ -135,7 +192,9 @@ public class BookingService {
                 return;
             } catch (HttpStatusCodeException error) {
                 step.state = SagaStepState.HOLD_FAILED;
-                step.lastError = "hold HTTP " + error.getStatusCode().value();
+                step.lastError = isCircuitOpenResponse(error)
+                        ? "hold refusé (circuit ouvert) HTTP " + error.getStatusCode().value()
+                        : "hold HTTP " + error.getStatusCode().value();
                 steps.save(step);
                 compensate(booking, sagaSteps, step.lastError);
                 return;
@@ -151,8 +210,10 @@ public class BookingService {
             step.state = SagaStepState.CONFIRM_PENDING;
             steps.save(step);
             try {
-                ConfirmResponse response = http.postForObject(serviceUrl(step.mode) + "/v1/holds/"
-                        + step.holdId + "/confirm", null, ConfirmResponse.class);
+                // Confirm non idempotent : protégé par circuit breaker mais JAMAIS rejoué.
+                ConfirmResponse response = guarded(step.mode, false, () ->
+                        http.postForObject(serviceUrl(step.mode) + "/v1/holds/"
+                                + step.holdId + "/confirm", null, ConfirmResponse.class));
                 if (response == null || response.bookingRef == null || response.bookingRef.isBlank()) {
                     step.lastError = "Réponse confirm vide; tentative de compensation via holdId";
                     step.state = SagaStepState.COMPENSATION_PENDING;
@@ -163,6 +224,13 @@ public class BookingService {
                 step.bookingRef = response.bookingRef;
                 step.state = SagaStepState.CONFIRMED;
                 steps.save(step);
+                log.info("Saga bookingId={} step={} ({}) CONFIRMED ref={}", booking.id, step.stepOrder, step.mode, step.bookingRef);
+            } catch (CallNotPermittedException open) {
+                step.lastError = "Circuit ouvert vers " + step.mode + " pendant confirm; compensation via holdId";
+                step.state = SagaStepState.COMPENSATION_PENDING;
+                steps.save(step);
+                compensate(booking, sagaSteps, step.lastError);
+                return;
             } catch (ResourceAccessException error) {
                 step.lastError = "Timeout confirm; compensation via holdId";
                 step.state = SagaStepState.COMPENSATION_PENDING;
@@ -178,9 +246,11 @@ public class BookingService {
             }
         }
         persistence.transition(booking, BookingState.CONFIRMED, null);
+        log.info("Saga bookingId={} terminée CONFIRMED", booking.id);
     }
 
     private void compensate(TripBookingEntity booking, List<SagaStepEntity> sagaSteps, String reason) {
+        log.warn("Compensation Saga bookingId={} raison={}", booking.id, reason);
         persistence.transition(booking, BookingState.COMPENSATING, reason);
         boolean pending = false;
         for (int i = sagaSteps.size() - 1; i >= 0; i--) {
@@ -203,12 +273,18 @@ public class BookingService {
                 continue;
             }
             try {
-                http.exchange(serviceUrl(step.mode) + "/v1/references/" + reference,
-                        HttpMethod.DELETE, HttpEntity.EMPTY, Void.class);
+                // Cancel idempotent : protégé par circuit breaker + rejeu automatique sur erreur transitoire.
+                guarded(step.mode, true, () -> {
+                    http.exchange(serviceUrl(step.mode) + "/v1/references/" + reference,
+                            HttpMethod.DELETE, HttpEntity.EMPTY, Void.class);
+                    return null;
+                });
                 step.state = SagaStepState.COMPENSATED;
                 step.lastError = null;
                 steps.save(step);
-            } catch (ResourceAccessException | HttpStatusCodeException error) {
+                log.info("Compensation réussie bookingId={} step={} ({}) ref={}",
+                        booking.id, step.stepOrder, step.mode, reference);
+            } catch (CallNotPermittedException | ResourceAccessException | HttpStatusCodeException error) {
                 step.compensationAttempts++;
                 step.state = SagaStepState.COMPENSATION_PENDING;
                 step.lastError = "Compensation échouée: " + error.getMessage();
@@ -218,10 +294,12 @@ public class BookingService {
                         booking.id, step.stepOrder, step.compensationAttempts);
             }
         }
-        persistence.transition(booking, pending ? BookingState.COMPENSATION_PENDING : BookingState.CANCELLED, reason);
+        BookingState finalState = pending ? BookingState.COMPENSATION_PENDING : BookingState.CANCELLED;
+        persistence.transition(booking, finalState, reason);
+        log.info("Compensation Saga bookingId={} terminée état={}", booking.id, finalState);
     }
 
-    @Scheduled(fixedDelayString = "${booking.outbox.scan-ms:2000}")
+    @Scheduled(fixedDelayString = "${booking.compensation.scan-ms:5000}")
     public void retryCompensations() {
         bookings.findByState(BookingState.COMPENSATION_PENDING).forEach(booking -> {
             List<SagaStepEntity> sagaSteps = steps.findByBookingIdOrderByStepOrder(booking.id);
@@ -248,6 +326,35 @@ public class BookingService {
             }
             compensate(booking, sagaSteps, "Saga récupérée après interruption ou délai dépassé");
         });
+    }
+
+    private <T> T guarded(TransportMode mode, boolean idempotent, Supplier<T> action) {
+        Supplier<T> supplier = CircuitBreaker.decorateSupplier(breakers.get(mode), action);
+        if (idempotent) {
+            supplier = Retry.decorateSupplier(idempotentRetry, supplier);
+        }
+        return supplier.get();
+    }
+
+    private static boolean isTransientOrServerFailure(Throwable error) {
+        if (error instanceof ResourceAccessException) return true;
+        if (error instanceof HttpStatusCodeException httpError) {
+            return httpError.getStatusCode().is5xxServerError();
+        }
+        return false;
+    }
+
+    private static boolean isRetryableFailure(Throwable error) {
+        if (error instanceof CallNotPermittedException) return false;
+        if (error instanceof HttpStatusCodeException httpError && isCircuitOpenResponse(httpError)) {
+            return false;
+        }
+        return isTransientOrServerFailure(error);
+    }
+
+    private static boolean isCircuitOpenResponse(HttpStatusCodeException error) {
+        String body = error.getResponseBodyAsString();
+        return body != null && body.contains(ApiError.CIRCUIT_OPEN);
     }
 
     private String serviceUrl(TransportMode mode) {
@@ -316,7 +423,7 @@ public class BookingService {
                 .queryParam("origin", segment.origin).queryParam("destination", segment.destination)
                 .queryParam("date", segment.date).build().encode().toUriString();
         try {
-            Offer[] offers = http.getForObject(uri, Offer[].class);
+            Offer[] offers = guarded(segment.mode, true, () -> http.getForObject(uri, Offer[].class));
             if (offers != null) {
                 for (Offer offer : offers) {
                     if (segment.offerId.equals(offer.offerId)) {
@@ -324,6 +431,8 @@ public class BookingService {
                     }
                 }
             }
+        } catch (CallNotPermittedException open) {
+            throw BookingException.unavailable("Circuit ouvert vers le service de transport " + segment.mode);
         } catch (ResourceAccessException error) {
             throw BookingException.unavailable("Le service de transport " + segment.mode + " est indisponible");
         } catch (HttpStatusCodeException error) {

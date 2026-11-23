@@ -9,6 +9,10 @@ RUN mvn -q -B -N install -DskipTests \
  && mvn -q -B -f rail-bridge/pom.xml package -DskipTests
 
 FROM eclipse-temurin:8-jre
+ARG OTEL_AGENT_VERSION=2.10.0
+RUN mkdir -p /opt/otel \
+ && curl -fsSL "https://repo1.maven.org/maven2/io/opentelemetry/javaagent/opentelemetry-javaagent/${OTEL_AGENT_VERSION}/opentelemetry-javaagent-${OTEL_AGENT_VERSION}.jar" \
+    -o /opt/otel/opentelemetry-javaagent.jar
 WORKDIR /app
 COPY --from=build /build/rail-bridge/target/rail-bridge.jar app.jar
 EXPOSE 8080

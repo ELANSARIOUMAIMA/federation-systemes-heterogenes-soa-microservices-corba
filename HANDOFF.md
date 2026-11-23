@@ -93,3 +93,14 @@ Conserver les identifiants RabbitMQ lors des redémarrages avec volumes persista
 - `docs/requests/verify-p2.ps1`
 - `docs/runtime-validation-report.md`
 - ADR-003, ADR-004 et ADR-005.
+
+---
+
+# Finalisation P3 — Observabilité, résilience et restitution
+
+## Ce qui a été livré en P3
+
+- **Traçabilité distribuée bout en bout** : agent Java OpenTelemetry 2.10.0 embarqué dans les 7 images Docker (Java 8 + Java 17), collecteur **Jaeger 1.62.0** (`http://localhost:16686`), spans manuels `CORBA RailBooking/<op>` et `SOAP AirPartner/<op>`, propagation W3C `traceparent` à travers le *transactional outbox* vers RabbitMQ et `notification-service` (**1 trace unique sur 7 services**), logs corrélés MDC (`trace_id`/`span_id`).
+- **Résilience (Resilience4j)** : circuit breakers sur `rail-bridge` (v1.7.1 Java 8), `air-bridge`, `booking-service` et `api-gateway` (v2.2.0 Java 17) ; désactivation des retries internes JacORB (`jacorb.retries=0`) ; timeouts hiérarchisés ; retries uniquement sur les opérations idempotentes (`search`, `cancel`) ; diagnostic temps réel sur `/actuator/health`.
+- **Démarrage à froid en une commande** : valeurs par défaut dans `docker-compose.yml` (`.env.example`), sondes TCP silencieuses (sans pollution Jaeger) et healthcheck RabbitMQ `check_port_connectivity`.
+- **Qualité & démonstration** : **26 tests automatisés** (dont tests unitaires des deux bridges, test d'intégration HTTP de compensation multi-modes et tests de circuit breaker), `README.md` d'exécution complet, `ADR-006`, `docs/P3_IMPLEMENTATION.md`, `docs/demo-scenario.md`, `docs/requests/demo-p3.ps1`, `docs/requests/demo-p3.sh` et `docs/requests/p3.http`.

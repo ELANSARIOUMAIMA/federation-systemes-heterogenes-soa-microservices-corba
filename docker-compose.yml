@@ -1,14 +1,37 @@
 # =====================================================================
-#  Starter kit — Plateforme de mobilité multimodale
-#  Démarre les DEUX systèmes partenaires "legacy" (fournis, non modifiables).
-#  Les étudiants ajoutent LEURS services (microservices, bridges, BFF…)
-#  sur le même réseau "mobilite-net".
+#  Plateforme de mobilité multimodale — Architecture complète (P1+P2+P3)
+#  - 2 systèmes partenaires "legacy" fournis et NON modifiés (CORBA, SOAP)
+#  - 2 bridges de protocole (rail-bridge Java 8 / JacORB, air-bridge SOAP)
+#  - 5 microservices internes (carshare, pricing, booking/saga, notification, gateway)
+#  - Infrastructure : RabbitMQ (événements) + Jaeger (traçabilité OpenTelemetry)
 #
-#  Lancement :  docker compose up --build
+#  Lancement direct après clone (aucune variable obligatoire) :
+#    docker compose up --build
 #
-#  Encadrement : Pr. Mahmoud NASSAR
+#  Encadrement : Pr. Mahmoud NASSAR — ENSIAS Rabat
 # =====================================================================
+
+x-otel-env: &otel-env
+  JAVA_TOOL_OPTIONS: "-javaagent:/opt/otel/opentelemetry-javaagent.jar"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_TRACES_SAMPLER: always_on
+  OTEL_METRICS_EXPORTER: none
+  OTEL_LOGS_EXPORTER: none
+
+x-http-healthcheck: &http-healthcheck
+  # Vérification TCP silencieuse : confirme que Tomcat écoute sur 8080 sans polluer Jaeger de traces /actuator/health.
+  test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080'"]
+  interval: 10s
+  timeout: 3s
+  retries: 12
+  start_period: 25s
+
 services:
+
+  # ===================================================================
+  #  Systèmes partenaires "legacy" (FOURNIS — dossiers intacts)
+  # ===================================================================
 
   # --- Opérateur ferroviaire : serveur CORBA (JacORB) ---
   rail:
@@ -16,8 +39,6 @@ services:
     image: mobilite/rail-operator-corba:1.0.0
     container_name: rail-operator-corba
     environment:
-      # Hôte annoncé dans l'IOR. Pour un bridge tournant DANS ce réseau,
-      # laisser "rail". Pour un bridge tournant sur l'hôte, mettre "localhost".
       CORBA_ADVERTISED_HOST: rail
       CORBA_PORT: "1050"
       IOR_FILE: /ior/RailBooking.ior
@@ -25,6 +46,12 @@ services:
       - "1050:1050"          # IIOP, publié sur l'hôte
     volumes:
       - ./ior:/ior           # le fichier IOR apparaît côté hôte dans ./ior/
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /ior/RailBooking.ior && bash -c 'exec 3<>/dev/tcp/127.0.0.1/1050'"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
 
   # --- Partenaire aérien : service SOAP (Spring WS) ---
   air:
@@ -33,45 +60,102 @@ services:
     container_name: air-partner-soap
     ports:
       - "8081:8080"          # WSDL: http://localhost:8081/ws/air.wsdl
-  # --- Bridge SOAP -> REST (à nous) ---
+    healthcheck: *http-healthcheck
+
+  # ===================================================================
+  #  Infrastructure : observabilité (Jaeger) et bus d'événements (RabbitMQ)
+  # ===================================================================
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: mobilite-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"        # UI Jaeger : http://localhost:16686
+      - "4317:4317"          # OTLP gRPC
+      - "4318:4318"          # OTLP HTTP
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: mobilite-rabbitmq
+    user: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-mobility}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-mobility-demo}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"        # Management UI : http://localhost:15672
+    healthcheck:
+      # check_port_connectivity attend que le port AMQP 5672 accepte réellement les connexions.
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # ===================================================================
+  #  Couche d'intégration : bridges de protocole (P1 + résilience/OTel P3)
+  # ===================================================================
+
+  # --- Bridge SOAP -> REST ---
   air-bridge:
     build:
       context: .
       dockerfile: air-bridge/Dockerfile
     container_name: air-bridge
     environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: air-bridge
       AIR_SOAP_URL: http://air:8080/ws
     depends_on:
       - air
+      - jaeger
     ports:
       - "8083:8080"
-  # --- Bridge CORBA -> REST (à nous) ---
+    healthcheck: *http-healthcheck
+
+  # --- Bridge CORBA -> REST (Java 8 + JacORB 3.9 + OTel Java agent + span manuel IIOP) ---
   rail-bridge:
     build:
       context: .
       dockerfile: rail-bridge/Dockerfile
     container_name: rail-bridge
     environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: rail-bridge
       RAIL_IOR_PATH: /ior/RailBooking.ior
     depends_on:
       - rail
+      - jaeger
     volumes:
       - ./ior:/ior:ro
     ports:
       - "8082:8080"
+    healthcheck: *http-healthcheck
 
-  # --- Services métier P2 ---
+  # ===================================================================
+  #  Microservices métier et passerelle (P2 + résilience/OTel P3)
+  # ===================================================================
+
   carshare-service:
     build:
       context: .
       dockerfile: carshare-service/Dockerfile
     container_name: carshare-service
     environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: carshare-service
       SPRING_DATASOURCE_URL: jdbc:h2:file:/data/carshare;DB_CLOSE_ON_EXIT=FALSE
     volumes:
       - carshare-data:/data
+    depends_on:
+      - jaeger
     ports:
       - "8084:8080"
+    healthcheck: *http-healthcheck
 
   pricing-service:
     build:
@@ -79,30 +163,16 @@ services:
       dockerfile: pricing-service/Dockerfile
     container_name: pricing-service
     environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: pricing-service
       SPRING_DATASOURCE_URL: jdbc:h2:file:/data/pricing;DB_CLOSE_ON_EXIT=FALSE
     volumes:
       - pricing-data:/data
+    depends_on:
+      - jaeger
     ports:
       - "8085:8080"
-
-  rabbitmq:
-    image: rabbitmq:3.13-management-alpine
-    container_name: mobilite-rabbitmq
-    user: rabbitmq
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:?Set RABBITMQ_USERNAME}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD}
-    volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
+    healthcheck: *http-healthcheck
 
   booking-service:
     build:
@@ -110,24 +180,34 @@ services:
       dockerfile: booking-service/Dockerfile
     container_name: booking-service
     environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: booking-service
       SPRING_DATASOURCE_URL: jdbc:h2:file:/data/booking;DB_CLOSE_ON_EXIT=FALSE
       RAIL_URL: http://rail-bridge:8080
       AIR_URL: http://air-bridge:8080
       CAR_URL: http://carshare-service:8080
       PRICING_URL: http://pricing-service:8080
       RABBITMQ_HOST: rabbitmq
-      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:?Set RABBITMQ_USERNAME}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD}
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-mobility}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-mobility-demo}
     volumes:
       - booking-data:/data
     depends_on:
-      - rail-bridge
-      - air-bridge
-      - carshare-service
-      - pricing-service
-      - rabbitmq
+      jaeger:
+        condition: service_started
+      rail-bridge:
+        condition: service_healthy
+      air-bridge:
+        condition: service_healthy
+      carshare-service:
+        condition: service_healthy
+      pricing-service:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     ports:
       - "8086:8080"
+    healthcheck: *http-healthcheck
 
   notification-service:
     build:
@@ -135,13 +215,17 @@ services:
       dockerfile: notification-service/Dockerfile
     container_name: notification-service
     environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: notification-service
       SPRING_DATASOURCE_URL: jdbc:h2:file:/data/notification;DB_CLOSE_ON_EXIT=FALSE
       RABBITMQ_HOST: rabbitmq
-      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:?Set RABBITMQ_USERNAME}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD}
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-mobility}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-mobility-demo}
     volumes:
       - notification-data:/data
     depends_on:
+      jaeger:
+        condition: service_started
       rabbitmq:
         condition: service_healthy
 
@@ -151,19 +235,28 @@ services:
       dockerfile: api-gateway/Dockerfile
     container_name: api-gateway
     environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: api-gateway
       RAIL_URL: http://rail-bridge:8080
       AIR_URL: http://air-bridge:8080
       CAR_URL: http://carshare-service:8080
       BOOKING_URL: http://booking-service:8080
-      GATEWAY_USERNAME: ${GATEWAY_USERNAME:?Set GATEWAY_USERNAME}
-      GATEWAY_PASSWORD: ${GATEWAY_PASSWORD:?Set GATEWAY_PASSWORD}
+      GATEWAY_USERNAME: ${GATEWAY_USERNAME:-demo}
+      GATEWAY_PASSWORD: ${GATEWAY_PASSWORD:-demo-pass}
     depends_on:
-      - rail-bridge
-      - air-bridge
-      - carshare-service
-      - booking-service
+      jaeger:
+        condition: service_started
+      rail-bridge:
+        condition: service_healthy
+      air-bridge:
+        condition: service_healthy
+      carshare-service:
+        condition: service_healthy
+      booking-service:
+        condition: service_healthy
     ports:
       - "8080:8080"
+    healthcheck: *http-healthcheck
 
 volumes:
   carshare-data:

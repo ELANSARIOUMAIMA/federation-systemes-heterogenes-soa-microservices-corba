@@ -27,7 +27,10 @@ public class GatewaySecurityConfig {
     }
 
     @Bean SecurityFilterChain gatewaySecurity(HttpSecurity http) throws Exception {
-        return http.csrf(csrf -> csrf.disable()).authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
+        return http.csrf(csrf -> csrf.disable())
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        .anyRequest().authenticated())
                 .httpBasic(Customizer.withDefaults()).build();
     }
 }

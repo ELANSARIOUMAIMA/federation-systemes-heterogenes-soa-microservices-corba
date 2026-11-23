@@ -27,6 +27,16 @@ public class BridgeException extends RuntimeException {
         return new BridgeException(HttpStatus.SERVICE_UNAVAILABLE, ApiError.UPSTREAM_UNAVAILABLE, reason);
     }
 
+    /** P3 : circuit breaker ouvert, le partenaire n'a PAS été appelé (issue certaine, aucun effet de bord). */
+    public static BridgeException circuitOpen(String reason) {
+        return new BridgeException(HttpStatus.SERVICE_UNAVAILABLE, ApiError.CIRCUIT_OPEN, reason);
+    }
+
+    /** Panne technique du partenaire (comptée par le circuit breaker), par opposition à un refus métier (409). */
+    public boolean isUpstreamFailure() {
+        return ApiError.UPSTREAM_UNAVAILABLE.equals(code);
+    }
+
     public HttpStatus getStatus() { return status; }
     public String getCode() { return code; }
 }

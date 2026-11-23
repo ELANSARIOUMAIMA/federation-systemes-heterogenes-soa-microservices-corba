@@ -41,7 +41,9 @@ import org.springframework.web.client.RestTemplate;
         "spring.datasource.url=jdbc:h2:mem:booking-test;DB_CLOSE_DELAY=-1",
         "spring.rabbitmq.username=test-user",
         "spring.rabbitmq.password=test-password",
-        "booking.outbox.scan-ms=3600000"
+        "booking.outbox.scan-ms=3600000",
+        "booking.compensation.scan-ms=3600000",
+        "booking.retry.wait-ms=0"
 })
 class BookingSagaTest {
     @MockBean RestTemplate http;

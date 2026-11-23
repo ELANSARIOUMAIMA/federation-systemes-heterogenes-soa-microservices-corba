@@ -5,6 +5,8 @@ public class ApiError {
     public static final String NOT_AVAILABLE = "NOT_AVAILABLE";               // HTTP 409
     public static final String UPSTREAM_UNAVAILABLE = "UPSTREAM_UNAVAILABLE"; // HTTP 503
     public static final String INVALID_REQUEST = "INVALID_REQUEST";           // HTTP 400
+    /** P3 : le circuit breaker du bridge est ouvert, l'opérateur n'a pas été appelé (HTTP 503). */
+    public static final String CIRCUIT_OPEN = "CIRCUIT_OPEN";
 
     public String code;
     public String reason;
