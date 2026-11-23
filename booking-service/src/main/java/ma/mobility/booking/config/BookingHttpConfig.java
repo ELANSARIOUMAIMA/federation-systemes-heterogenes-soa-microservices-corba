@@ -10,6 +10,7 @@ import org.springframework.web.client.RestTemplate;
 public class BookingHttpConfig {
     @Bean
     RestTemplate bookingRestTemplate(RestTemplateBuilder builder) {
-        return builder.setConnectTimeout(Duration.ofSeconds(2)).setReadTimeout(Duration.ofSeconds(5)).build();
+        // P3 : readTimeout 6 s > budget des bridges (2 s connect + 3 s reply = 5 s), évite les faux UNKNOWN_OUTCOME.
+        return builder.setConnectTimeout(Duration.ofSeconds(2)).setReadTimeout(Duration.ofSeconds(6)).build();
     }
 }

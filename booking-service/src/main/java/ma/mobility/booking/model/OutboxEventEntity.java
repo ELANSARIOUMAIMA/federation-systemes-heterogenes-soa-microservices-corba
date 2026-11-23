@@ -16,6 +16,8 @@ public class OutboxEventEntity {
     public Instant createdAt;
     public Instant publishedAt;
     public int attempts;
+    /** P3 : contexte W3C traceparent capturé lors de la transaction, restauré à la publication RabbitMQ. */
+    public String traceparent;
 
     public OutboxEventEntity() { }
 }

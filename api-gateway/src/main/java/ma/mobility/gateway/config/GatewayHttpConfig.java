@@ -9,6 +9,8 @@ import org.springframework.web.client.RestTemplate;
 @Configuration
 public class GatewayHttpConfig {
     @Bean RestTemplate gatewayRestTemplate(RestTemplateBuilder builder) {
-        return builder.setConnectTimeout(Duration.ofSeconds(2)).setReadTimeout(Duration.ofSeconds(8)).build();
+        // P3 : readTimeout 20 s pour ne pas couper une Saga 3 modes + compensation ;
+        // la recherche /api/v1/search applique son propre délai court (3,5 s) + circuit breaker par source.
+        return builder.setConnectTimeout(Duration.ofSeconds(2)).setReadTimeout(Duration.ofSeconds(20)).build();
     }
 }

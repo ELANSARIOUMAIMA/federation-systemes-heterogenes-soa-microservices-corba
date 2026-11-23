@@ -2,7 +2,10 @@ package ma.mobility.booking.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.context.Context;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.ArrayList;
 import java.util.List;
@@ -80,11 +83,20 @@ public class BookingPersistence {
                 event.eventType = eventType;
                 event.payload = mapper.writeValueAsString(payload);
                 event.createdAt = Instant.now();
+                event.traceparent = currentTraceparent();
                 outbox.save(event);
             } catch (JsonProcessingException error) {
                 throw new IllegalStateException("Échec de sérialisation de l'événement outbox", error);
             }
         }
         return saved;
+    }
+
+    /** Capture le header W3C traceparent courant (no-op sans agent OpenTelemetry). */
+    private static String currentTraceparent() {
+        Map<String, String> carrier = new HashMap<>();
+        GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
+                .inject(Context.current(), carrier, Map::put);
+        return carrier.get("traceparent");
     }
 }
