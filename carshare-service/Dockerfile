@@ -4,6 +4,10 @@ COPY . .
 RUN mvn -B -ntp -pl carshare-service -am -DskipTests package
 
 FROM eclipse-temurin:17-jre
+ARG OTEL_AGENT_VERSION=2.10.0
+RUN mkdir -p /opt/otel \
+ && curl -fsSL "https://repo1.maven.org/maven2/io/opentelemetry/javaagent/opentelemetry-javaagent/${OTEL_AGENT_VERSION}/opentelemetry-javaagent-${OTEL_AGENT_VERSION}.jar" \
+    -o /opt/otel/opentelemetry-javaagent.jar
 WORKDIR /app
 COPY --from=build /workspace/carshare-service/target/carshare-service.jar app.jar
 VOLUME ["/data"]
