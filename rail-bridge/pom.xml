@@ -42,6 +42,10 @@
       <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.jacorb</groupId>
       <artifactId>jacorb</artifactId>
       <version>${jacorb.version}</version>
@@ -56,6 +60,24 @@
       <artifactId>jacorb-idl-compiler</artifactId>
       <version>${jacorb.version}</version>
       <scope>provided</scope>
+    </dependency>
+    <!-- P3 : résilience. Resilience4j 1.7.x = dernière ligne compatible Java 8 (2.x exige Java 17). -->
+    <dependency>
+      <groupId>io.github.resilience4j</groupId>
+      <artifactId>resilience4j-circuitbreaker</artifactId>
+      <version>1.7.1</version>
+    </dependency>
+    <!-- P3 : API OpenTelemetry pour le span manuel autour de l'appel CORBA (l'agent Java n'instrumente pas IIOP).
+         Sans agent, l'API est un no-op. L'API OTel 1.x supporte Java 8. -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-api</artifactId>
+      <version>1.44.1</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 
