@@ -1,0 +1,83 @@
+### Variables (identifiants par défaut de docker-compose.yml)
+@gateway = http://localhost:8080
+@railBridge = http://localhost:8082
+@airBridge = http://localhost:8083
+@booking = http://localhost:8086
+@jaeger = http://localhost:16686
+@auth = Basic ZGVtbzpkZW1vLXBhc3M=
+
+### 1. Santé & état des circuit breakers (sans auth)
+GET {{gateway}}/actuator/health
+
+###
+GET {{railBridge}}/actuator/health
+
+###
+GET {{airBridge}}/actuator/health
+
+###
+GET {{booking}}/actuator/health
+
+### 2. Recherche multimodale agrégée (TRAIN CORBA + CAR REST)
+GET {{gateway}}/api/v1/search?origin=Casablanca&destination=Rabat&date=2026-11-15
+Authorization: {{auth}}
+
+### 3. Réservation multimodale nominale 3 modes (TRAIN + AIR + CAR) -> CONFIRMED
+POST {{gateway}}/api/v1/bookings
+Authorization: {{auth}}
+Content-Type: application/json
+Idempotency-Key: http-demo-nominal-01
+
+{
+  "segments": [
+    {"mode":"TRAIN","offerId":"RAIL:RAIL-CAS-RAB-0730","origin":"Casablanca","destination":"Rabat","date":"2026-11-15","seats":1},
+    {"mode":"AIR","offerId":"AIR:AIR-RBA-ORY-1200","origin":"Rabat","destination":"Paris","date":"2026-11-15","seats":1},
+    {"mode":"CAR","offerId":"CAR:CAR-CAS-RAB-1000","origin":"Casablanca","destination":"Rabat","date":"2026-11-15","seats":1}
+  ]
+}
+
+### 4. Rejeu idempotent (même Idempotency-Key, même payload -> même bookingId)
+POST {{gateway}}/api/v1/bookings
+Authorization: {{auth}}
+Content-Type: application/json
+Idempotency-Key: http-demo-nominal-01
+
+{
+  "segments": [
+    {"mode":"TRAIN","offerId":"RAIL:RAIL-CAS-RAB-0730","origin":"Casablanca","destination":"Rabat","date":"2026-11-15","seats":1},
+    {"mode":"AIR","offerId":"AIR:AIR-RBA-ORY-1200","origin":"Rabat","destination":"Paris","date":"2026-11-15","seats":1},
+    {"mode":"CAR","offerId":"CAR:CAR-CAS-RAB-1000","origin":"Casablanca","destination":"Rabat","date":"2026-11-15","seats":1}
+  ]
+}
+
+### 5. Conflit d'idempotence (même clé, payload différent -> HTTP 409)
+POST {{gateway}}/api/v1/bookings
+Authorization: {{auth}}
+Content-Type: application/json
+Idempotency-Key: http-demo-nominal-01
+
+{
+  "segments": [
+    {"mode":"TRAIN","offerId":"RAIL:RAIL-CAS-RAB-0730","origin":"Casablanca","destination":"Rabat","date":"2026-11-15","seats":2}
+  ]
+}
+
+### 6. Scénario d'échec compensé (TRAIN + CAR + vol AIR-CMN-MAD-1800 x 4 > 3 places) -> CANCELLED
+POST {{gateway}}/api/v1/bookings
+Authorization: {{auth}}
+Content-Type: application/json
+Idempotency-Key: http-demo-compensated-01
+
+{
+  "segments": [
+    {"mode":"TRAIN","offerId":"RAIL:RAIL-CAS-RAB-0730","origin":"Casablanca","destination":"Rabat","date":"2026-11-15","seats":1},
+    {"mode":"CAR","offerId":"CAR:CAR-CAS-RAB-1000","origin":"Casablanca","destination":"Rabat","date":"2026-11-15","seats":1},
+    {"mode":"AIR","offerId":"AIR:AIR-CMN-MAD-1800","origin":"Casablanca","destination":"Madrid","date":"2026-11-15","seats":4}
+  ]
+}
+
+### 7. Vérifier les services enregistrés dans Jaeger
+GET {{jaeger}}/api/services
+
+### 8. Lister les dernières traces de réservation dans Jaeger
+GET {{jaeger}}/api/traces?service=api-gateway&operation=POST%20/api/v1/bookings&limit=5
